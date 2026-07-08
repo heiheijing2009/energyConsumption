@@ -661,8 +661,8 @@ async function startSim() {
 async function renderResultTab() {
   state.jobs = await api(`/api/systems/${state.currentSystem.id}/jobs`);
   const jobs = state.jobs;
-  const latest = jobs[0];
-  const hasResult = jobs.some(j => j.status === "success");
+  const latestSuccess = jobs.find(j => j.status === "success");
+  const hasResult = Boolean(latestSuccess);
   $("tabContent").innerHTML = `
     <div class="result-head">
       <h3>运算结果</h3>
@@ -675,7 +675,7 @@ async function renderResultTab() {
       ${jobs.map(j => `<tr><td>${j.id}</td><td><span class="status ${j.status}">${j.status}</span></td><td>${j.progress}%</td><td>${esc(j.message || "")}</td><td>${formatChinaTime(j.updated_at)}</td><td>${j.status==="success" ? `<button onclick="loadResult(${j.id})">查看</button><button onclick="downloadAuth('/api/jobs/${j.id}/download','simulation_result_${j.id}.xlsx')">下载</button>` : ""}</td></tr>`).join("") || `<tr><td colspan="6" class="muted">暂无运算任务</td></tr>`}
     </tbody></table>
     <div id="resultBox" style="margin-top:16px"></div>`;
-  if (latest?.status === "success") await loadResult(latest.id);
+  if (latestSuccess) await loadResult(latestSuccess.id);
 }
 
 function filteredJobs() {
