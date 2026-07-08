@@ -135,9 +135,20 @@ textarea { min-height: 76px; resize: vertical; }
   gap: 10px;
   padding: 0 18px;
   border-bottom: 1px solid var(--border);
+  border-left: 0;
+  border-right: 0;
+  border-top: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text);
   font-weight: 700;
   letter-spacing: .2px;
+  text-align: left;
+  width: 100%;
+  justify-content: flex-start;
+  box-shadow: none;
 }
+.logo:hover { background: var(--surface-2); color: var(--text); }
 .logo-mark {
   width: 32px;
   height: 32px;
@@ -330,6 +341,17 @@ textarea { min-height: 76px; resize: vertical; }
   color: var(--primary);
   border-bottom-color: var(--primary);
   font-weight: 700;
+}
+.result-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 14px;
+  margin: 2px 0 14px;
+}
+.result-head h3 {
+  margin: 0;
+  font-size: 16px;
 }
 .tab-head {
   display: flex;

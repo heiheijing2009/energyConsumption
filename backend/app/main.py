@@ -736,7 +736,7 @@ def job_result(job_id: int, _: dict = Depends(require_user)):
         raise HTTPException(status_code=404, detail="结果不存在")
     path = Path(job["result_path"])
     monthly = pd.read_excel(path, sheet_name="月汇总值").fillna("").to_dict(orient="records")
-    hourly = pd.read_excel(path, sheet_name="逐时值", nrows=200).fillna("").to_dict(orient="records")
+    hourly = pd.read_excel(path, sheet_name="逐时值", nrows=8760).fillna("").to_dict(orient="records")
     return {"monthly": monthly, "hourly": hourly}
 
 

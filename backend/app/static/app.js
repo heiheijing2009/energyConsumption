@@ -55,7 +55,7 @@ function render() {
   $("app").innerHTML = `
     <div class="app">
       <aside class="sidebar">
-        <div class="logo"><div class="logo-mark">冷</div><div>制冷站能耗模拟平台</div></div>
+        <button class="logo" onclick="goHome()" title="返回项目管理"><div class="logo-mark">冷</div><div>制冷站能耗模拟平台</div></button>
         <div class="nav">
           ${state.currentProject ? projectNav() : rootNav()}
         </div>
@@ -105,7 +105,6 @@ async function login(e) {
 
 function rootNav() {
   return `
-    <div class="nav-title">功能导航</div>
     <button class="nav-item ${state.view === "projects" ? "active" : ""}" onclick="goRoot('projects')"><span>项目管理</span></button>
     <button class="nav-item ${state.view === "weather" ? "active" : ""}" onclick="goRoot('weather')"><span>参数库</span></button>
     ${state.user?.role === "admin" ? `<button class="nav-item ${state.view === "users" ? "active" : ""}" onclick="goRoot('users')"><span>账号管理</span></button>` : ""}
@@ -114,9 +113,6 @@ function rootNav() {
 
 function projectNav() {
   return `
-    <div class="nav-title">当前项目</div>
-    <button class="nav-item" onclick="leaveProject()"><span>返回项目管理</span></button>
-    <div class="nav-title">系统列表</div>
     ${state.systems.map(s => `<div class="system-nav-row ${state.currentSystem?.id === s.id ? "active" : ""}">
       <button class="nav-item ${state.currentSystem?.id === s.id ? "active" : ""}" onclick="openSystem(${s.id})"><span>${esc(s.name)}</span></button>
       <button class="nav-icon" title="编辑系统" onclick="showSystemModal(${s.id})">编辑</button>
@@ -124,6 +120,10 @@ function projectNav() {
     </div>`).join("")}
     <button class="nav-item" onclick="showSystemModal()"><span>+ 新建系统</span></button>
   `;
+}
+
+function goHome() {
+  goRoot("projects");
 }
 
 function topTitle() {
@@ -660,16 +660,19 @@ async function startSim() {
 
 async function renderResultTab() {
   state.jobs = await api(`/api/systems/${state.currentSystem.id}/jobs`);
-  const jobs = filteredJobs();
+  const jobs = state.jobs;
   const latest = jobs[0];
+  const hasResult = jobs.some(j => j.status === "success");
   $("tabContent").innerHTML = `
-    <div class="filterbar">
-      <div class="field"><label>结果筛选</label><input placeholder="状态 / 消息" value="${esc(state.filters.jobs)}" oninput="state.filters.jobs=this.value; renderResultTab()" /></div>
+    <div class="result-head">
+      <h3>运算结果</h3>
+      <div class="inline-actions">
       <button onclick="renderResultTab()">刷新</button>
-      <button class="primary" onclick="startSim()">重新核算</button>
+        <button class="primary" onclick="startSim()">${hasResult ? "重新核算" : "能耗核算"}</button>
+      </div>
     </div>
     <table><thead><tr><th>ID</th><th>状态</th><th>进度</th><th>消息</th><th>时间</th><th>操作</th></tr></thead><tbody>
-      ${jobs.map(j => `<tr><td>${j.id}</td><td><span class="status ${j.status}">${j.status}</span></td><td>${j.progress}%</td><td>${esc(j.message || "")}</td><td>${formatChinaTime(j.updated_at)}</td><td>${j.status==="success" ? `<button onclick="loadResult(${j.id})">查看</button><button onclick="downloadAuth('/api/jobs/${j.id}/download','simulation_result_${j.id}.xlsx')">下载</button>` : ""}</td></tr>`).join("")}
+      ${jobs.map(j => `<tr><td>${j.id}</td><td><span class="status ${j.status}">${j.status}</span></td><td>${j.progress}%</td><td>${esc(j.message || "")}</td><td>${formatChinaTime(j.updated_at)}</td><td>${j.status==="success" ? `<button onclick="loadResult(${j.id})">查看</button><button onclick="downloadAuth('/api/jobs/${j.id}/download','simulation_result_${j.id}.xlsx')">下载</button>` : ""}</td></tr>`).join("") || `<tr><td colspan="6" class="muted">暂无运算任务</td></tr>`}
     </tbody></table>
     <div id="resultBox" style="margin-top:16px"></div>`;
   if (latest?.status === "success") await loadResult(latest.id);
@@ -686,21 +689,70 @@ async function loadResult(id) {
   state.result = data;
   const box = $("resultBox");
   if (!box) return;
-  box.innerHTML = `<div class="charts"><div id="chartEnergy" class="chart"></div><div id="chartEer" class="chart"></div></div>
+  box.innerHTML = `<div class="charts"><div id="chartEnergy" class="chart"></div><div id="chartHourly" class="chart"></div></div>
     <div class="subhead"><h3>月汇总值</h3></div>${simpleTable(data.monthly)}
     <div class="subhead"><h3>逐时值预览</h3></div>${simpleTable(data.hourly.slice(0, 50))}`;
-  drawCharts(data.monthly);
+  drawCharts(data.monthly, data.hourly);
 }
 
-function drawCharts(rows) {
+function drawCharts(rows, hourlyRows = []) {
   const months = rows.map(r => r.month);
   const energy = echarts.init($("chartEnergy"));
-  energy.setOption({ tooltip: {}, legend: {}, xAxis: { type: "category", data: months }, yAxis: {}, series: [
-    { name: "总耗电量", type: "bar", data: rows.map(r => r["总耗电量"]) },
-    { name: "冷负荷", type: "line", data: rows.map(r => r["冷负荷"]) }
-  ]});
-  const eer = echarts.init($("chartEer"));
-  eer.setOption({ tooltip: {}, xAxis: { type: "category", data: months }, yAxis: {}, series: [{ name: "EER", type: "line", smooth: true, data: rows.map(r => r.EER || r["Unnamed: 8"]) }]});
+  energy.setOption({
+    tooltip: {
+      trigger: "axis",
+      valueFormatter: value => `${fmt(Number(value))} kWh`,
+    },
+    legend: {},
+    grid: { left: 58, right: 28, top: 46, bottom: 42 },
+    xAxis: { type: "category", data: months, name: "月份" },
+    yAxis: { type: "value", name: "kWh" },
+    series: [
+      { name: "总耗电量", type: "bar", data: rows.map(r => r["总耗电量"]) },
+      { name: "冷负荷", type: "line", smooth: true, data: rows.map(r => r["冷负荷"]) },
+    ],
+  });
+  const hourly = echarts.init($("chartHourly"));
+  const hourlyLabels = hourlyRows.map((r, index) => hourlyLabel(r, index));
+  hourly.setOption({
+    tooltip: {
+      trigger: "axis",
+      valueFormatter: value => `${fmt(Number(value))} kWh`,
+    },
+    legend: {},
+    grid: { left: 58, right: 28, top: 46, bottom: 72 },
+    dataZoom: [
+      { type: "slider", height: 22, bottom: 24, start: 0, end: Math.min(100, hourlyRows.length ? 10 : 100) },
+      { type: "inside" },
+    ],
+    xAxis: { type: "category", data: hourlyLabels, name: "小时", boundaryGap: false },
+    yAxis: { type: "value", name: "kWh" },
+    series: [
+      {
+        name: "冷负荷",
+        type: "line",
+        showSymbol: false,
+        smooth: true,
+        sampling: "lttb",
+        data: hourlyRows.map(r => Number(r.CL_real ?? r.CL ?? r["冷负荷"] ?? 0)),
+      },
+      {
+        name: "总耗电量",
+        type: "line",
+        showSymbol: false,
+        smooth: true,
+        sampling: "lttb",
+        data: hourlyRows.map(r => Number(r.power ?? r["总耗电量"] ?? 0)),
+      },
+    ],
+  });
+}
+
+function hourlyLabel(row, index) {
+  const month = row.month ?? "";
+  const day = row.day ?? "";
+  const hour = row.hour ?? "";
+  return month && day ? `${month}/${day} ${hour}:00` : `H${index + 1}`;
 }
 
 function simpleTable(rows) {
