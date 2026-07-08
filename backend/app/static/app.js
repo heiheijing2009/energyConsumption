@@ -10,6 +10,9 @@ const state = {
   currentSystem: null,
   params: null,
   activeTab: "config",
+  editingTab: null,
+  editDraft: null,
+  validationMessage: "",
   jobs: [],
   result: null,
   filters: { projects: "", weather: "", systems: "", jobs: "", users: "" },
@@ -155,7 +158,7 @@ async function renderProjects() {
           <h3>${esc(p.name)}</h3>
           <p>气象数据：${esc(p.weather_city)} / ${esc(p.weather_year || "")}</p>
           <p>系统数量：${p.system_count}</p>
-          <p>${esc(p.remark || "")}</p>
+          <p class="card-remark">${p.remark ? esc(p.remark) : "&nbsp;"}</p>
           <div class="card-actions">
             <button class="primary" onclick="enterProject(${p.id})">进入项目</button>
             <button onclick="showProjectModal(${p.id})">编辑</button>
@@ -292,7 +295,6 @@ function renderSystem() {
   }
   $("content").innerHTML = `
     <div class="toolbar">
-      <button class="primary" onclick="saveParams()">保存参数</button>
       <button class="primary" onclick="startSim()">参数模拟</button>
     </div>
     <div class="panel">
@@ -311,98 +313,163 @@ function renderSystem() {
 }
 
 function tabBtn(id, text) {
-  return `<button class="tab ${state.activeTab === id ? "active" : ""}" onclick="state.activeTab='${id}'; renderSystem()">${text}</button>`;
+  return `<button class="tab ${state.activeTab === id ? "active" : ""}" onclick="switchTab('${id}')">${text}</button>`;
+}
+
+function switchTab(id) {
+  if (state.editingTab && state.editingTab !== id) {
+    if (!confirm("当前参数正在编辑，切换页签会放弃未确认的修改，是否继续？")) return;
+    cancelEdit(false);
+  }
+  state.activeTab = id;
+  state.validationMessage = "";
+  renderSystem();
 }
 
 function renderTab() {
   const el = $("tabContent");
-  if (state.activeTab === "config") el.innerHTML = configHtml();
-  if (state.activeTab === "simu") el.innerHTML = valueOnlyTable("simu_values", state.params.simu_values, ["group", "key", "name", "unit", "value"], { group: "分组", key: "编码", name: "参数名称", unit: "单位", value: "value" });
-  if (state.activeTab === "basic") el.innerHTML = valueOnlyTable("basic_config", state.params.basic_config, ["key", "name", "unit", "remark", "value"], { key: "编码", name: "参数名称", unit: "单位", remark: "备注", value: "value" });
-  if (state.activeTab === "load") el.innerHTML = loadHtml();
-  if (state.activeTab === "chiller") el.innerHTML = chillerHtml();
+  if (state.activeTab === "config") el.innerHTML = paramTabShell("系统配置", configHtml());
+  if (state.activeTab === "simu") el.innerHTML = paramTabShell("修正系数", valueOnlyTable("simu_values", workingParams().simu_values, ["group", "key", "name", "unit", "value"], { group: "分组", key: "编码", name: "参数名称", unit: "单位", value: "value" }));
+  if (state.activeTab === "basic") el.innerHTML = paramTabShell("基础配置", valueOnlyTable("basic_config", workingParams().basic_config, ["key", "name", "unit", "remark", "value"], { key: "编码", name: "参数名称", unit: "单位", remark: "备注", value: "value" }));
+  if (state.activeTab === "load") el.innerHTML = paramTabShell("负载率", loadHtml());
+  if (state.activeTab === "chiller") el.innerHTML = paramTabShell("变水温报告", chillerHtml());
   if (state.activeTab === "result") renderResultTab();
 }
 
+function paramTabShell(title, body) {
+  const editing = isEditing();
+  const invalid = !isTabComplete(state.activeTab, workingParams());
+  const warning = state.validationMessage || (invalid ? "参数未填写完整，请补充" : "");
+  return `
+    <div class="tab-head">
+      <div>
+        <h3>${title}</h3>
+        ${warning ? `<div class="form-warning">${warning}</div>` : ""}
+      </div>
+      <div class="inline-actions">
+        ${editing
+          ? `<button onclick="cancelEdit()">取消</button><button class="primary" onclick="confirmEdit()">确认</button>`
+          : `<button class="primary" onclick="beginEdit()">编辑</button>`}
+      </div>
+    </div>
+    ${body}`;
+}
+
+function beginEdit() {
+  state.editingTab = state.activeTab;
+  state.editDraft = deepClone(state.params);
+  state.validationMessage = "";
+  renderTab();
+}
+
+function cancelEdit(render = true) {
+  state.editingTab = null;
+  state.editDraft = null;
+  state.validationMessage = "";
+  if (render) renderTab();
+}
+
+async function confirmEdit() {
+  if (!state.editingTab) return;
+  normalizeConfig(workingParams());
+  if (!isTabComplete(state.editingTab, workingParams())) {
+    state.validationMessage = "参数未填写完整，请补充";
+    renderTab();
+    return;
+  }
+  const changed = !sameJson(state.params, state.editDraft);
+  if (changed && hasSuccessResult()) {
+    const ok = confirm("重新编辑参数会清空结果，需要对项目进行重新模拟。");
+    if (!ok) return;
+  }
+  state.params = deepClone(state.editDraft);
+  state.editingTab = null;
+  state.editDraft = null;
+  state.validationMessage = "";
+  if (changed) {
+    const data = await saveParams(false);
+    if (data.results_cleared) state.result = null;
+  }
+  state.jobs = await api(`/api/systems/${state.currentSystem.id}/jobs`);
+  renderSystem();
+}
+
 function configHtml() {
-  normalizeConfig();
-  const c = state.params.config;
+  normalizeConfig(workingParams());
+  const c = workingParams().config;
+  const editing = isEditing();
   return `
     <div class="form-grid">
       ${selectField("PumpFormChwPri", "冷冻一次泵形式", c.PumpFormChwPri, [["1","一对一"],["2","并联"]])}
       ${selectField("PumpFormCwPri", "冷却泵形式", c.PumpFormCwPri, [["1","一对一"],["2","并联"]])}
       ${selectField("PumpFormChwSec", "冷冻二次泵形式", c.PumpFormChwSec, [["0","无"],["2","并联"]])}
     </div>
-    <div class="subhead"><h3>冷机型号</h3><button onclick="addModel()">新增冷机</button></div>
+    <div class="subhead"><h3>冷机型号</h3>${editing ? `<button onclick="addModel()">新增冷机</button>` : ""}</div>
     ${arrayTable("model_num_dict", c.model_num_dict, ["冷机型号", "冷机台数", "冷机容量RT"])}
-    <div class="subhead"><h3>冷冻一次泵参数</h3>${Number(c.PumpFormChwPri) === 2 ? `<button onclick="addPump('chwp_pump_config_list','冷冻一次泵')">新增水泵</button>` : `<span class="muted">一对一时数量由冷机台数自动同步</span>`}</div>
+    <div class="subhead"><h3>冷冻一次泵参数</h3>${Number(c.PumpFormChwPri) === 2 && editing ? `<button onclick="addPump('chwp_pump_config_list','冷冻一次泵')">新增水泵</button>` : `<span class="muted">一对一时数量由冷机台数自动同步</span>`}</div>
     ${arrayTable("chwp_pump_config_list", c.chwp_pump_config_list, ["name", "flow", "head", "power"], Number(c.PumpFormChwPri) === 1)}
-    <div class="subhead"><h3>冷却水泵参数</h3>${Number(c.PumpFormCwPri) === 2 ? `<button onclick="addPump('cwp_pump_config_list','冷却泵')">新增水泵</button>` : `<span class="muted">一对一时数量由冷机台数自动同步</span>`}</div>
+    <div class="subhead"><h3>冷却水泵参数</h3>${Number(c.PumpFormCwPri) === 2 && editing ? `<button onclick="addPump('cwp_pump_config_list','冷却泵')">新增水泵</button>` : `<span class="muted">一对一时数量由冷机台数自动同步</span>`}</div>
     ${arrayTable("cwp_pump_config_list", c.cwp_pump_config_list, ["name", "flow", "head", "power"], Number(c.PumpFormCwPri) === 1)}
-    <div class="subhead"><h3>冷冻二次泵参数</h3>${Number(c.PumpFormChwSec) === 2 ? `<button onclick="addPump('chwp_sec_pump_config_list','冷冻二次泵')">新增水泵</button>` : `<span class="muted">形式为无时不启用</span>`}</div>
+    <div class="subhead"><h3>冷冻二次泵参数</h3>${Number(c.PumpFormChwSec) === 2 && editing ? `<button onclick="addPump('chwp_sec_pump_config_list','冷冻二次泵')">新增水泵</button>` : `<span class="muted">形式为无时不启用</span>`}</div>
     ${Number(c.PumpFormChwSec) === 2 ? arrayTable("chwp_sec_pump_config_list", c.chwp_sec_pump_config_list, ["name", "flow", "head", "power"], false) : `<div class="notice">冷冻二次泵形式为无，无需填写水泵参数</div>`}`;
 }
 
 function selectField(key, label, value, options) {
-  return `<div class="field"><label>${label}</label><select required onchange="commitParamChange(this, () => { state.params.config.${key}=Number(this.value); normalizeConfig(); }, true)">${options.map(o => `<option value="${o[0]}" ${String(value)===o[0]?"selected":""}>${o[1]}</option>`).join("")}</select></div>`;
+  return `<div class="field"><label>${label}</label><select required ${disabledAttr()} onchange="workingParams().config.${key}=Number(this.value); normalizeConfig(workingParams()); renderTab()">${options.map(o => `<option value="${o[0]}" ${String(value)===o[0]?"selected":""}>${o[1]}</option>`).join("")}</select></div>`;
 }
 
 function valueOnlyTable(key, rows, cols, labels = {}) {
   return `<table><thead><tr>${cols.map(c => `<th>${esc(labels[c] || c)}</th>`).join("")}</tr></thead><tbody>
-    ${rows.map((r,i) => `<tr>${cols.map(c => `<td>${c === "value" ? `<input required value="${esc(r[c] ?? "")}" onchange="commitParamChange(this, () => { state.params.${key}[${i}]['${c}']=numOrStr(this.value); })" />` : esc(r[c] ?? "")}</td>`).join("")}</tr>`).join("")}
+    ${rows.map((r,i) => `<tr>${cols.map(c => `<td>${c === "value" ? `<input required ${disabledAttr()} value="${esc(r[c] ?? "")}" oninput="workingParams()['${key}'][${i}]['${c}']=numOrStr(this.value)" />` : esc(r[c] ?? "")}</td>`).join("")}</tr>`).join("")}
   </tbody></table>`;
 }
 
 function arrayTable(key, rows, cols, lockCount = false) {
   const labels = { name: "水泵名称", flow: "流量", head: "扬程", power: "功率" };
   return `<table><thead><tr>${cols.map(c => `<th>${labels[c] || c}</th>`).join("")}<th></th></tr></thead><tbody>
-    ${rows.map((r,i) => `<tr>${cols.map(c => `<td><input required value="${esc(r[c] ?? "")}" onchange="commitParamChange(this, () => { state.params.config.${key}[${i}]['${c}']=numOrStr(this.value); ${key === "model_num_dict" ? "normalizeConfig();" : ""} }, ${key === "model_num_dict"})" /></td>`).join("")}<td>${lockCount ? `<span class="muted">自动</span>` : `<button class="danger" onclick="deleteConfigRow('${key}', ${i})">删除</button>`}</td></tr>`).join("")}
+    ${rows.map((r,i) => `<tr>${cols.map(c => `<td><input required ${disabledAttr()} value="${esc(r[c] ?? "")}" oninput="workingParams().config.${key}[${i}]['${c}']=numOrStr(this.value)" onchange="${key === "model_num_dict" ? "normalizeConfig(workingParams()); renderTab()" : ""}" /></td>`).join("")}<td>${!isEditing() ? "" : lockCount ? `<span class="muted">自动</span>` : `<button class="danger" onclick="deleteConfigRow('${key}', ${i})">删除</button>`}</td></tr>`).join("")}
   </tbody></table>`;
 }
 
-async function addModel() {
-  if (!(await ensureParamChangeAllowed())) return;
-  state.params.config.model_num_dict.push({ "冷机型号": "", "冷机台数": 1, "冷机容量RT": "" });
-  normalizeConfig();
-  renderSystem();
+function addModel() {
+  if (!isEditing()) return;
+  workingParams().config.model_num_dict.push({ "冷机型号": "", "冷机台数": 1, "冷机容量RT": "" });
+  normalizeConfig(workingParams());
+  renderTab();
 }
-async function addPump(key, prefix = "水泵") {
-  if (!(await ensureParamChangeAllowed())) return;
-  state.params.config[key].push({ name: `${prefix}${state.params.config[key].length + 1}`, flow: "", head: "", power: "" });
-  renderSystem();
+function addPump(key, prefix = "水泵") {
+  if (!isEditing()) return;
+  workingParams().config[key].push({ name: `${prefix}${workingParams().config[key].length + 1}`, flow: "", head: "", power: "" });
+  renderTab();
 }
-async function deleteConfigRow(key, index) {
-  if (!(await ensureParamChangeAllowed())) return;
-  state.params.config[key].splice(index, 1);
-  if (key === "model_num_dict") normalizeConfig();
-  renderSystem();
+function deleteConfigRow(key, index) {
+  if (!isEditing()) return;
+  workingParams().config[key].splice(index, 1);
+  if (key === "model_num_dict") normalizeConfig(workingParams());
+  renderTab();
 }
 
-function normalizeConfig() {
-  const c = state.params.config;
+function normalizeConfig(params = workingParams()) {
+  const c = params.config;
   c.model_num_dict ||= [];
   c.chwp_pump_config_list ||= [];
   c.cwp_pump_config_list ||= [];
   c.chwp_sec_pump_config_list ||= [];
-  for (const row of c.chwp_pump_config_list) row.name ||= `冷冻一次泵${c.chwp_pump_config_list.indexOf(row) + 1}`;
-  for (const row of c.cwp_pump_config_list) row.name ||= `冷却泵${c.cwp_pump_config_list.indexOf(row) + 1}`;
-  for (const row of c.chwp_sec_pump_config_list) row.name ||= `冷冻二次泵${c.chwp_sec_pump_config_list.indexOf(row) + 1}`;
-  if (Number(c.PumpFormChwPri) === 1) syncPumpRows("chwp_pump_config_list", "冷冻一次泵");
-  if (Number(c.PumpFormCwPri) === 1) syncPumpRows("cwp_pump_config_list", "冷却泵");
+  if (Number(c.PumpFormChwPri) === 1) syncPumpRows(params, "chwp_pump_config_list", "冷冻一次泵");
+  if (Number(c.PumpFormCwPri) === 1) syncPumpRows(params, "cwp_pump_config_list", "冷却泵");
   if (Number(c.PumpFormChwSec) === 0) c.chwp_sec_pump_config_list = [];
-  syncReportsFromModels();
+  syncReportsFromModels(params);
 }
 
-function syncPumpRows(key, prefix) {
-  const c = state.params.config;
+function syncPumpRows(params, key, prefix) {
+  const c = params.config;
   const total = c.model_num_dict.reduce((sum, model) => sum + Math.max(0, Number(model["冷机台数"] || 0)), 0);
   while (c[key].length < total) {
-    const previous = c[key].slice().reverse().find(row => row.flow !== "" && row.head !== "" && row.power !== "") || {};
     c[key].push({
       name: `${prefix}${c[key].length + 1}`,
-      flow: previous.flow ?? "",
-      head: previous.head ?? "",
-      power: previous.power ?? "",
+      flow: "",
+      head: "",
+      power: "",
     });
   }
   if (c[key].length > total) c[key] = c[key].slice(0, total);
@@ -420,9 +487,9 @@ function defaultReportRows() {
   return rows;
 }
 
-function syncReportsFromModels() {
-  const existing = new Map((state.params.chiller_reports || []).map(r => [r.name, r]));
-  state.params.chiller_reports = (state.params.config.model_num_dict || []).map(model => {
+function syncReportsFromModels(params = workingParams()) {
+  const existing = new Map((params.chiller_reports || []).map(r => [r.name, r]));
+  params.chiller_reports = (params.config.model_num_dict || []).map(model => {
     const name = reportNameFromModel(model);
     const found = existing.get(name) || {};
     return { name, capacity_rt: model["冷机容量RT"], count: model["冷机台数"], rows: found.rows || defaultReportRows() };
@@ -430,19 +497,20 @@ function syncReportsFromModels() {
 }
 
 function loadHtml() {
-  return `<div class="subhead"><h3>逐月负载率</h3></div>${loadTable("load_ratio_month", state.params.load_ratio_month, "month", "load1", "月份")}
-    <div class="subhead"><h3>逐时负载率</h3></div>${loadTable("load_ratio_hour", state.params.load_ratio_hour, "hour", "CL_hour", "时间（h）")}`;
+  const params = workingParams();
+  return `<div class="subhead"><h3>逐月负载率</h3></div>${loadTable("load_ratio_month", params.load_ratio_month, "month", "load1", "月份")}
+    <div class="subhead"><h3>逐时负载率</h3></div>${loadTable("load_ratio_hour", params.load_ratio_hour, "hour", "CL_hour", "时间（h）")}`;
 }
 
 function loadTable(key, rows, fixedKey, valueKey, fixedLabel) {
   return `<table><thead><tr><th>${fixedLabel}</th><th>负载率（%）</th></tr></thead><tbody>
-    ${rows.map((r,i) => `<tr><td>${esc(r[fixedKey])}</td><td><input required value="${esc(r[valueKey] ?? "")}" onchange="commitParamChange(this, () => { state.params.${key}[${i}]['${valueKey}']=numOrStr(this.value); })" /></td></tr>`).join("")}
+    ${rows.map((r,i) => `<tr><td>${esc(r[fixedKey])}</td><td><input required ${disabledAttr()} value="${esc(r[valueKey] ?? "")}" oninput="workingParams()['${key}'][${i}]['${valueKey}']=numOrStr(this.value)" /></td></tr>`).join("")}
   </tbody></table>`;
 }
 
 function chillerHtml() {
-  normalizeConfig();
-  return `${state.params.chiller_reports.map((r,ri) => `
+  normalizeConfig(workingParams());
+  return `${workingParams().chiller_reports.map((r,ri) => `
     <div class="panel">
       <div class="subhead">
         <div>
@@ -451,7 +519,7 @@ function chillerHtml() {
         </div>
         <div class="inline-actions">
           <button onclick="downloadAuth('/api/systems/${state.currentSystem.id}/chiller/${ri}/template','${esc(r.name)}_变水温报告模板.xlsx')">下载模板</button>
-          <button onclick="chooseChillerReportFile(${ri})">上传数据</button>
+          ${isEditing() ? `<button onclick="chooseChillerReportFile(${ri})">上传数据</button>` : ""}
         </div>
       </div>
       ${reportTable(ri, r.rows || [])}
@@ -464,7 +532,7 @@ function reportTable(ri, rows) {
   const loadCols = ["1","0.85","0.8","0.7","0.6","0.5","0.4","0.3","0.2","0.15"].filter(c => baseCols.includes(c));
   const cols = ["CondEWT", ...loadCols];
   return `<table><thead><tr>${cols.map(c => `<th>${c === "CondEWT" ? "冷却水出水温度（℃）" : `负载率 ${esc(c)}`}</th>`).join("")}</tr></thead><tbody>
-    ${rows.map((r,i) => `<tr>${cols.map(c => `<td>${c === "CondEWT" ? esc(r[c] ?? "") : `<input value="${esc(r[c] ?? "")}" onchange="commitParamChange(this, () => { state.params.chiller_reports[${ri}].rows[${i}]['${c}']=numOrStr(this.value); })" />`}</td>`).join("")}</tr>`).join("")}
+    ${rows.map((r,i) => `<tr>${cols.map(c => `<td>${c === "CondEWT" ? esc(r[c] ?? "") : `<input required ${disabledAttr()} value="${esc(r[c] ?? "")}" oninput="workingParams().chiller_reports[${ri}].rows[${i}]['${c}']=numOrStr(this.value)" />`}</td>`).join("")}</tr>`).join("")}
   </tbody></table>`;
 }
 
@@ -480,16 +548,13 @@ async function uploadSelectedChillerReport() {
   const index = Number(input.dataset.reportIndex);
   const file = input.files[0];
   if (!file || Number.isNaN(index)) return;
-  if (!(await ensureParamChangeAllowed())) {
-    input.value = "";
-    return;
-  }
+  if (!isEditing()) return;
   const fd = new FormData();
   fd.append("file", file);
-  const data = await api(`/api/systems/${state.currentSystem.id}/chiller/${index}/upload`, { method: "POST", body: fd, headers: {} });
-  state.params.chiller_reports[index] = data.report;
+  const data = await api("/api/chiller/preview", { method: "POST", body: fd, headers: {} });
+  workingParams().chiller_reports[index].rows = data.rows;
   input.value = "";
-  renderSystem();
+  renderTab();
 }
 
 function parseRt(name) {
@@ -497,38 +562,95 @@ function parseRt(name) {
   return m ? Number(m[1]) : "";
 }
 
-async function ensureParamChangeAllowed() {
-  if (!state.jobs.some(j => j.status === "success")) return true;
-  const ok = confirm("当前系统已有模拟结果。修改任意参数会清空已有模拟结果，并需要重新跑模拟运算。是否确认修改？");
-  if (!ok) return false;
-  await api(`/api/systems/${state.currentSystem.id}/results`, { method: "DELETE" });
-  state.jobs = [];
-  state.result = null;
-  return true;
+function isEditing() {
+  return state.editingTab === state.activeTab && state.editDraft;
 }
 
-async function commitParamChange(input, applyChange, rerender = false) {
-  if (!(await ensureParamChangeAllowed())) {
-    input.value = input.defaultValue;
-    return false;
+function workingParams() {
+  return isEditing() ? state.editDraft : state.params;
+}
+
+function disabledAttr() {
+  return isEditing() ? "" : "disabled";
+}
+
+function deepClone(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
+function sameJson(left, right) {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function hasSuccessResult() {
+  return state.jobs.some(j => j.status === "success");
+}
+
+function filled(value) {
+  return value !== "" && value !== null && value !== undefined;
+}
+
+function rowsComplete(rows, fields) {
+  return Array.isArray(rows) && rows.length > 0 && rows.every(row => fields.every(field => filled(row?.[field])));
+}
+
+function isTabComplete(tab, params = state.params) {
+  if (!params) return false;
+  if (tab === "config") {
+    normalizeConfig(params);
+    const c = params.config || {};
+    if (!rowsComplete(c.model_num_dict, ["冷机型号", "冷机台数", "冷机容量RT"])) return false;
+    const chillerCount = (c.model_num_dict || []).reduce((sum, model) => sum + Math.max(0, Number(model["冷机台数"] || 0)), 0);
+    if (Number(c.PumpFormChwPri) === 1 || Number(c.PumpFormChwPri) === 2) {
+      if (!rowsComplete(c.chwp_pump_config_list, ["name", "flow", "head", "power"])) return false;
+    }
+    if (Number(c.PumpFormChwPri) === 1 && (c.chwp_pump_config_list || []).length !== chillerCount) return false;
+    if (Number(c.PumpFormCwPri) === 1 || Number(c.PumpFormCwPri) === 2) {
+      if (!rowsComplete(c.cwp_pump_config_list, ["name", "flow", "head", "power"])) return false;
+    }
+    if (Number(c.PumpFormCwPri) === 1 && (c.cwp_pump_config_list || []).length !== chillerCount) return false;
+    if (Number(c.PumpFormChwSec) === 2 && !rowsComplete(c.chwp_sec_pump_config_list, ["name", "flow", "head", "power"])) return false;
+    return true;
   }
-  applyChange();
-  input.defaultValue = input.value;
-  if (rerender) renderSystem();
+  if (tab === "simu") return rowsComplete(params.simu_values, ["value"]);
+  if (tab === "basic") return rowsComplete(params.basic_config, ["value"]);
+  if (tab === "load") {
+    return rowsComplete(params.load_ratio_month, ["load1"]) && rowsComplete(params.load_ratio_hour, ["CL_hour"]);
+  }
+  if (tab === "chiller") {
+    normalizeConfig(params);
+    const cols = ["1","0.85","0.8","0.7","0.6","0.5","0.4","0.3","0.2","0.15"];
+    return Array.isArray(params.chiller_reports) && params.chiller_reports.length > 0
+      && params.chiller_reports.every(report => rowsComplete(report.rows, cols));
+  }
   return true;
 }
 
-async function saveParams() {
-  normalizeConfig();
+function validateAllParams(params = state.params) {
+  for (const tab of ["config", "simu", "basic", "load", "chiller"]) {
+    if (!isTabComplete(tab, params)) return false;
+  }
+  return true;
+}
+
+async function saveParams(showAlert = true) {
+  normalizeConfig(state.params);
   const data = await api(`/api/systems/${state.currentSystem.id}/parameters`, { method: "PUT", body: JSON.stringify({ parameters: state.params }) });
   state.jobs = await api(`/api/systems/${state.currentSystem.id}/jobs`);
-  alert(data.results_cleared ? "参数已保存，原有运算结果已清空，请重新核算。" : "参数已保存");
-  return true;
+  if (showAlert) alert(data.results_cleared ? "参数已保存，原有运算结果已清空，请重新核算。" : "参数已保存");
+  return data;
 }
 
 async function startSim() {
-  const saved = await saveParams();
-  if (!saved) return;
+  if (state.editingTab) {
+    alert("请先确认或取消当前正在编辑的参数。");
+    return;
+  }
+  if (!validateAllParams(state.params)) {
+    alert("参数未填写完整，请补充");
+    return;
+  }
+  await saveParams(false);
   const job = await api(`/api/systems/${state.currentSystem.id}/simulate`, { method: "POST", body: "{}" });
   alert(`任务已提交：${job.id}`);
   state.activeTab = "result";
@@ -547,7 +669,7 @@ async function renderResultTab() {
       <button class="primary" onclick="startSim()">重新核算</button>
     </div>
     <table><thead><tr><th>ID</th><th>状态</th><th>进度</th><th>消息</th><th>时间</th><th>操作</th></tr></thead><tbody>
-      ${jobs.map(j => `<tr><td>${j.id}</td><td><span class="status ${j.status}">${j.status}</span></td><td>${j.progress}%</td><td>${esc(j.message || "")}</td><td>${j.updated_at}</td><td>${j.status==="success" ? `<button onclick="loadResult(${j.id})">查看</button><button onclick="downloadAuth('/api/jobs/${j.id}/download','simulation_result_${j.id}.xlsx')">下载</button>` : ""}</td></tr>`).join("")}
+      ${jobs.map(j => `<tr><td>${j.id}</td><td><span class="status ${j.status}">${j.status}</span></td><td>${j.progress}%</td><td>${esc(j.message || "")}</td><td>${formatChinaTime(j.updated_at)}</td><td>${j.status==="success" ? `<button onclick="loadResult(${j.id})">查看</button><button onclick="downloadAuth('/api/jobs/${j.id}/download','simulation_result_${j.id}.xlsx')">下载</button>` : ""}</td></tr>`).join("")}
     </tbody></table>
     <div id="resultBox" style="margin-top:16px"></div>`;
   if (latest?.status === "success") await loadResult(latest.id);
@@ -736,6 +858,21 @@ function numOrStr(v) { const n = Number(v); return v !== "" && !Number.isNaN(n) 
 function esc(v) { return String(v ?? "").replace(/[&<>"']/g, s => ({ "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;" }[s])); }
 function escAttr(v) { return String(v ?? "").replace(/\\/g, "\\\\").replace(/'/g, "\\'").replace(/\n/g, " "); }
 function fmt(v) { return typeof v === "number" ? Number(v.toFixed(4)) : v; }
+function formatChinaTime(value) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return esc(value);
+  return date.toLocaleString("zh-CN", {
+    timeZone: "Asia/Shanghai",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  });
+}
 
 (async function init() {
   if (state.token) {

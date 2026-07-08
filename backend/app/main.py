@@ -144,32 +144,55 @@ def sync_chiller_reports(params: dict) -> dict:
     return params
 
 
-def sanitize_pump_configs(config: dict) -> dict:
-    config = copy.deepcopy(config)
+def value_filled(value: Any) -> bool:
+    return value not in ("", None)
 
-    def clean_list(key: str, default_name: str, default_values: dict) -> None:
-        rows = config.get(key) or []
-        cleaned = []
-        last_valid = dict(default_values)
-        for index, row in enumerate(rows):
-            item = dict(row or {})
-            item["name"] = item.get("name") or f"{default_name}{index + 1}"
-            for field in ("flow", "head", "power"):
-                value = item.get(field)
-                if value in ("", None):
-                    item[field] = last_valid[field]
-                else:
-                    item[field] = float(value)
-            last_valid = {field: item[field] for field in ("flow", "head", "power")}
-            cleaned.append(item)
-        if not cleaned and int(config.get("PumpFormChwSec", 0)) == 2:
-            cleaned.append({"name": f"{default_name}1", **default_values})
-        config[key] = cleaned
 
-    clean_list("chwp_pump_config_list", "冷冻一次泵", {"flow": 605, "head": 55, "power": 132})
-    clean_list("cwp_pump_config_list", "冷却泵", {"flow": 905, "head": 55, "power": 185})
-    clean_list("chwp_sec_pump_config_list", "冷冻二次泵", {"flow": 1160, "head": 38, "power": 200})
-    return config
+def rows_complete(rows: list[dict] | None, fields: list[str]) -> bool:
+    return bool(rows) and all(all(value_filled((row or {}).get(field)) for field in fields) for row in rows)
+
+
+def safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def validate_parameters_complete(params: dict) -> None:
+    params = sync_chiller_reports(params)
+    config = params.get("config") or {}
+    errors = []
+    models = config.get("model_num_dict") or []
+    if not rows_complete(models, ["冷机型号", "冷机台数", "冷机容量RT"]):
+        errors.append("系统配置-冷机型号")
+    chiller_count = sum(max(0, safe_int(model.get("冷机台数"))) for model in models)
+    chwp_rows = config.get("chwp_pump_config_list") or []
+    cwp_rows = config.get("cwp_pump_config_list") or []
+    if safe_int(config.get("PumpFormChwPri", 0)) in (1, 2) and not rows_complete(chwp_rows, ["name", "flow", "head", "power"]):
+        errors.append("系统配置-冷冻一次泵参数")
+    elif safe_int(config.get("PumpFormChwPri", 0)) == 1 and len(chwp_rows) != chiller_count:
+        errors.append("系统配置-冷冻一次泵数量")
+    if safe_int(config.get("PumpFormCwPri", 0)) in (1, 2) and not rows_complete(cwp_rows, ["name", "flow", "head", "power"]):
+        errors.append("系统配置-冷却水泵参数")
+    elif safe_int(config.get("PumpFormCwPri", 0)) == 1 and len(cwp_rows) != chiller_count:
+        errors.append("系统配置-冷却水泵数量")
+    if safe_int(config.get("PumpFormChwSec", 0)) == 2 and not rows_complete(config.get("chwp_sec_pump_config_list"), ["name", "flow", "head", "power"]):
+        errors.append("系统配置-冷冻二次泵参数")
+    if not rows_complete(params.get("simu_values"), ["value"]):
+        errors.append("修正系数")
+    if not rows_complete(params.get("basic_config"), ["value"]):
+        errors.append("基础配置")
+    if not rows_complete(params.get("load_ratio_month"), ["load1"]):
+        errors.append("负载率-逐月")
+    if not rows_complete(params.get("load_ratio_hour"), ["CL_hour"]):
+        errors.append("负载率-逐时")
+    report_cols = ["1", "0.85", "0.8", "0.7", "0.6", "0.5", "0.4", "0.3", "0.2", "0.15"]
+    reports = params.get("chiller_reports") or []
+    if not reports or any(not rows_complete(report.get("rows"), report_cols) for report in reports):
+        errors.append("变水温报告")
+    if errors:
+        raise ValueError("参数未填写完整，请补充：" + "、".join(errors))
 
 
 def require_system(system_id: int) -> dict:
@@ -518,7 +541,6 @@ def delete_system_results(system_id: int, _: dict = Depends(require_user)):
 def get_parameters(system_id: int, _: dict = Depends(require_user)):
     system = require_system(system_id)
     params = sync_chiller_reports(load_params(system_id))
-    params["config"] = sanitize_pump_configs(params.get("config", {}))
     save_params(system_id, params)
     return {"system": {k: system[k] for k in ["id", "project_id", "name", "remark", "project_name"]}, "parameters": params}
 
@@ -527,7 +549,6 @@ def get_parameters(system_id: int, _: dict = Depends(require_user)):
 def put_parameters(system_id: int, payload: ParamsPayload, _: dict = Depends(require_user)):
     require_system(system_id)
     params = sync_chiller_reports(payload.parameters)
-    params["config"] = sanitize_pump_configs(params.get("config", {}))
     with get_db() as db:
         row = db.execute("SELECT parameters_json FROM systems WHERE id=?", (system_id,)).fetchone()
         old_params = json.loads(row["parameters_json"]) if row else {}
@@ -548,6 +569,18 @@ def chiller_template(_: dict = Depends(require_user)):
     with pd.ExcelWriter(tmp) as writer:
         pd.DataFrame(CHILLER_TEMPLATE_ROWS).to_excel(writer, sheet_name="2800RT冷机型号", index=False)
     return FileResponse(tmp, filename="变水温报告模板.xlsx")
+
+
+@app.post("/api/chiller/preview")
+async def preview_chiller_report(file: UploadFile = File(...), _: dict = Depends(require_user)):
+    suffix = Path(file.filename or "chiller.xlsx").suffix
+    tmp = UPLOADS_DIR / f"chiller_preview_{now().replace(':','')}{suffix}"
+    with tmp.open("wb") as fh:
+        shutil.copyfileobj(file.file, fh)
+    reports = read_chiller_workbook(tmp)
+    if not reports:
+        raise HTTPException(status_code=400, detail="文件中没有可用的变水温报告")
+    return {"ok": True, "rows": reports[0]["rows"]}
 
 
 @app.get("/api/systems/{system_id}/chiller/{report_index}/template")
@@ -623,6 +656,7 @@ def run_job(job_id: int, system_id: int, user_id: int) -> None:
         params = sync_chiller_reports(json.loads(system["parameters_json"]))
         if not params.get("chiller_reports"):
             raise ValueError("请先填写或上传变水温报告")
+        validate_parameters_complete(params)
         values = {row["key"]: row["value"] for row in params["basic_config"]}
         if "CTpower" in values and "Ctpower" not in values:
             values["Ctpower"] = values["CTpower"]
@@ -637,7 +671,6 @@ def run_job(job_id: int, system_id: int, user_id: int) -> None:
             }
             for report in params["chiller_reports"]
         ]
-        config = sanitize_pump_configs(config)
         config.update(values)
         run_dir = RUNS_DIR / str(job_id)
         write_input_files(run_dir, params, weather_rows)
@@ -660,6 +693,11 @@ def run_job(job_id: int, system_id: int, user_id: int) -> None:
 @app.post("/api/systems/{system_id}/simulate")
 def simulate(system_id: int, background: BackgroundTasks, user: dict = Depends(require_user)):
     require_system(system_id)
+    params = sync_chiller_reports(load_params(system_id))
+    try:
+        validate_parameters_complete(params)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     with job_lock, get_db() as db:
         active = db.execute("SELECT id FROM simulation_jobs WHERE system_id=? AND status IN ('pending','running')", (system_id,)).fetchone()
         if active:

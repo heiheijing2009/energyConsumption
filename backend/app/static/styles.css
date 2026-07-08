@@ -274,6 +274,9 @@ textarea { min-height: 76px; resize: vertical; }
   box-shadow: var(--shadow-sm);
   position: relative;
   overflow: hidden;
+  min-height: 214px;
+  display: flex;
+  flex-direction: column;
 }
 .card::before {
   content: "";
@@ -286,10 +289,14 @@ textarea { min-height: 76px; resize: vertical; }
 .card:hover { border-color: #d4dde9; box-shadow: var(--shadow); }
 .card h3 { margin: 2px 0 10px; font-size: 16px; letter-spacing: .1px; }
 .card p { margin: 5px 0; color: var(--muted); }
+.card-remark {
+  min-height: 21px;
+}
 .card-actions {
   display: flex;
   gap: 8px;
-  margin-top: 14px;
+  margin-top: auto;
+  padding-top: 14px;
   flex-wrap: wrap;
 }
 
@@ -324,6 +331,25 @@ textarea { min-height: 76px; resize: vertical; }
   border-bottom-color: var(--primary);
   font-weight: 700;
 }
+.tab-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  margin: 2px 0 14px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+.tab-head h3 {
+  margin: 0;
+  font-size: 16px;
+}
+.form-warning {
+  color: var(--danger);
+  font-size: 12px;
+  font-weight: 700;
+  margin-top: 5px;
+}
 
 table {
   width: 100%;
@@ -350,6 +376,12 @@ th {
 }
 td { color: #1e293b; }
 td input, td select { min-width: 82px; }
+td input:disabled, td select:disabled, .field input:disabled, .field select:disabled {
+  background: #f8fafc;
+  color: #475569;
+  border-color: transparent;
+  cursor: default;
+}
 tbody tr:hover td { background: #fbfdff; }
 
 .form-grid {
