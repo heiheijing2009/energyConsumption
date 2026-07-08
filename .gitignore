@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+.Python
+.venv/
+venv/
+env/
+.env
+
+backend/storage/
+backend/data/*.backup.db
+backend/data/*.local.db
+
+资料/
+用户填写参数/
+*.zip
+模拟结果样例.xlsx
+零碳园区源网荷储设计平台.html
