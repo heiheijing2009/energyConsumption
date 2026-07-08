@@ -714,38 +714,108 @@ function drawCharts(rows, hourlyRows = []) {
   });
   const hourly = echarts.init($("chartHourly"));
   const hourlyLabels = hourlyRows.map((r, index) => hourlyLabel(r, index));
+  const hourlySeries = hourlySeriesFromRows(hourlyRows);
+  const hourlySelected = Object.fromEntries(hourlySeries.map(item => [item.name, item.defaultSelected]));
+  const hourlyUnits = Object.fromEntries(hourlySeries.map(item => [item.name, item.unit]));
   hourly.setOption({
     tooltip: {
       trigger: "axis",
-      valueFormatter: value => `${fmt(Number(value))} kWh`,
+      formatter: params => chartTooltip(params, hourlyUnits),
     },
-    legend: {},
-    grid: { left: 58, right: 28, top: 46, bottom: 72 },
+    legend: {
+      type: "scroll",
+      top: 8,
+      left: 12,
+      right: 12,
+      selected: hourlySelected,
+    },
+    grid: { left: 58, right: 28, top: 82, bottom: 72 },
     dataZoom: [
       { type: "slider", height: 22, bottom: 24, start: 0, end: Math.min(100, hourlyRows.length ? 10 : 100) },
       { type: "inside" },
     ],
     xAxis: { type: "category", data: hourlyLabels, name: "小时", boundaryGap: false },
-    yAxis: { type: "value", name: "kWh" },
-    series: [
-      {
-        name: "冷负荷",
-        type: "line",
-        showSymbol: false,
-        smooth: true,
-        sampling: "lttb",
-        data: hourlyRows.map(r => Number(r.CL_real ?? r.CL ?? r["冷负荷"] ?? 0)),
-      },
-      {
-        name: "总耗电量",
-        type: "line",
-        showSymbol: false,
-        smooth: true,
-        sampling: "lttb",
-        data: hourlyRows.map(r => Number(r.power ?? r["总耗电量"] ?? 0)),
-      },
-    ],
+    yAxis: { type: "value", name: "逐时值" },
+    series: hourlySeries.map(item => ({
+      name: item.name,
+      type: "line",
+      showSymbol: false,
+      smooth: true,
+      sampling: "lttb",
+      data: item.values,
+      unit: item.unit,
+    })),
   });
+}
+
+function hourlySeriesFromRows(rows) {
+  if (!rows.length) return [];
+  const excluded = new Set(["Unnamed: 0", "times", "month", "day", "hour", "load", "方案", "免费制冷", "lv等级"]);
+  const preferred = ["CL_real", "power", "chiller", "pump", "pump_cw", "pump_chw", "pump_chw_sec", "tower", "EER", "COP", "dry", "wb", "CL", "max_capacity", "money"];
+  const keys = Object.keys(rows[0])
+    .filter(key => !excluded.has(key))
+    .filter(key => rows.some(row => isFiniteNumber(row[key])));
+  keys.sort((a, b) => {
+    const ai = preferred.indexOf(a);
+    const bi = preferred.indexOf(b);
+    if (ai !== -1 || bi !== -1) return (ai === -1 ? 999 : ai) - (bi === -1 ? 999 : bi);
+    return a.localeCompare(b, "zh-CN");
+  });
+  return keys.map(key => ({
+    key,
+    name: hourlyFieldName(key),
+    unit: hourlyFieldUnit(key),
+    defaultSelected: ["CL_real", "power"].includes(key),
+    values: rows.map(row => isFiniteNumber(row[key]) ? Number(row[key]) : null),
+  }));
+}
+
+function isFiniteNumber(value) {
+  if (value === "" || value === null || value === undefined) return false;
+  return Number.isFinite(Number(value));
+}
+
+function hourlyFieldName(key) {
+  const names = {
+    dry: "干球温度",
+    wb: "湿球温度",
+    CL: "需求冷负荷",
+    HL: "热负荷",
+    CL_real: "冷负荷",
+    chiller: "冷机耗电量",
+    pump_cw: "冷却泵耗电量",
+    pump_chw: "冷冻泵耗电量",
+    pump_chw_sec: "冷冻二次泵耗电量",
+    chp_sec_total: "二次泵汇总",
+    pump: "泵总耗电量",
+    tower: "冷塔耗电量",
+    power: "总耗电量",
+    money: "电费",
+    max_capacity: "最大能力",
+    EER: "EER",
+    COP: "COP",
+    "单时负载率": "单时负载率",
+  };
+  return names[key] || key;
+}
+
+function hourlyFieldUnit(key) {
+  if (["dry", "wb"].includes(key)) return "℃";
+  if (["EER", "COP", "单时负载率"].includes(key)) return "";
+  if (key === "money") return "元";
+  if (["CL", "HL", "CL_real", "max_capacity"].includes(key)) return "kW";
+  if (key.includes("pump") || ["chiller", "tower", "power", "chp_sec_total"].includes(key)) return "kWh";
+  return "";
+}
+
+function chartTooltip(params, units = {}) {
+  const items = Array.isArray(params) ? params : [params];
+  const title = items[0]?.axisValueLabel || items[0]?.name || "";
+  return `<div>${esc(title)}</div>` + items.map(item => {
+    const unit = item.data == null ? "" : units[item.seriesName] || "";
+    const value = item.data == null ? "" : fmt(Number(item.data));
+    return `<div>${item.marker}${esc(item.seriesName)}：${esc(value)}${unit ? ` ${unit}` : ""}</div>`;
+  }).join("");
 }
 
 function hourlyLabel(row, index) {

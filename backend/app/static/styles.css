@@ -456,7 +456,7 @@ tbody tr:hover td { background: #fbfdff; }
   gap: 14px;
 }
 .chart {
-  height: 310px;
+  height: 360px;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: #fff;
