@@ -396,7 +396,15 @@ function normalizeConfig() {
 function syncPumpRows(key, prefix) {
   const c = state.params.config;
   const total = c.model_num_dict.reduce((sum, model) => sum + Math.max(0, Number(model["冷机台数"] || 0)), 0);
-  while (c[key].length < total) c[key].push({ name: `${prefix}${c[key].length + 1}`, flow: "", head: "", power: "" });
+  while (c[key].length < total) {
+    const previous = c[key].slice().reverse().find(row => row.flow !== "" && row.head !== "" && row.power !== "") || {};
+    c[key].push({
+      name: `${prefix}${c[key].length + 1}`,
+      flow: previous.flow ?? "",
+      head: previous.head ?? "",
+      power: previous.power ?? "",
+    });
+  }
   if (c[key].length > total) c[key] = c[key].slice(0, total);
 }
 

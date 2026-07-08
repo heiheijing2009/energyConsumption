@@ -144,6 +144,34 @@ def sync_chiller_reports(params: dict) -> dict:
     return params
 
 
+def sanitize_pump_configs(config: dict) -> dict:
+    config = copy.deepcopy(config)
+
+    def clean_list(key: str, default_name: str, default_values: dict) -> None:
+        rows = config.get(key) or []
+        cleaned = []
+        last_valid = dict(default_values)
+        for index, row in enumerate(rows):
+            item = dict(row or {})
+            item["name"] = item.get("name") or f"{default_name}{index + 1}"
+            for field in ("flow", "head", "power"):
+                value = item.get(field)
+                if value in ("", None):
+                    item[field] = last_valid[field]
+                else:
+                    item[field] = float(value)
+            last_valid = {field: item[field] for field in ("flow", "head", "power")}
+            cleaned.append(item)
+        if not cleaned and int(config.get("PumpFormChwSec", 0)) == 2:
+            cleaned.append({"name": f"{default_name}1", **default_values})
+        config[key] = cleaned
+
+    clean_list("chwp_pump_config_list", "冷冻一次泵", {"flow": 605, "head": 55, "power": 132})
+    clean_list("cwp_pump_config_list", "冷却泵", {"flow": 905, "head": 55, "power": 185})
+    clean_list("chwp_sec_pump_config_list", "冷冻二次泵", {"flow": 1160, "head": 38, "power": 200})
+    return config
+
+
 def require_system(system_id: int) -> dict:
     with get_db() as db:
         row = db.execute(
@@ -490,6 +518,7 @@ def delete_system_results(system_id: int, _: dict = Depends(require_user)):
 def get_parameters(system_id: int, _: dict = Depends(require_user)):
     system = require_system(system_id)
     params = sync_chiller_reports(load_params(system_id))
+    params["config"] = sanitize_pump_configs(params.get("config", {}))
     save_params(system_id, params)
     return {"system": {k: system[k] for k in ["id", "project_id", "name", "remark", "project_name"]}, "parameters": params}
 
@@ -498,6 +527,7 @@ def get_parameters(system_id: int, _: dict = Depends(require_user)):
 def put_parameters(system_id: int, payload: ParamsPayload, _: dict = Depends(require_user)):
     require_system(system_id)
     params = sync_chiller_reports(payload.parameters)
+    params["config"] = sanitize_pump_configs(params.get("config", {}))
     with get_db() as db:
         row = db.execute("SELECT parameters_json FROM systems WHERE id=?", (system_id,)).fetchone()
         old_params = json.loads(row["parameters_json"]) if row else {}
@@ -607,6 +637,7 @@ def run_job(job_id: int, system_id: int, user_id: int) -> None:
             }
             for report in params["chiller_reports"]
         ]
+        config = sanitize_pump_configs(config)
         config.update(values)
         run_dir = RUNS_DIR / str(job_id)
         write_input_files(run_dir, params, weather_rows)
