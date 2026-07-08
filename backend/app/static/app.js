@@ -180,7 +180,7 @@ function filteredProjects() {
 function projectFormHtml() {
   return `<input type="hidden" id="projectId" />
     <div class="field"><label>项目名称 *</label><input id="projectName" required /></div>
-    <div class="field"><label>引用城市 *</label><select id="projectCity" onchange="updateProjectYears()">${weatherGroups().map(g => `<option value="${esc(g.city)}">${esc(g.city)}</option>`).join("")}</select></div>
+    <div class="field"><label>引用城市 *</label><select id="projectCity" onchange="updateProjectYears()">${completeWeatherGroups().map(g => `<option value="${esc(g.city)}">${esc(g.city)}</option>`).join("")}</select></div>
     <div class="field"><label>气象年份 *</label><select id="projectWeather"></select></div>
     <div class="field"><label>备注</label><textarea id="projectRemark"></textarea></div>`;
 }
@@ -197,26 +197,39 @@ function weatherGroups() {
   }));
 }
 
+function completeWeatherGroups() {
+  return weatherGroups()
+    .map(group => ({ ...group, years: group.years.filter(w => w.is_complete) }))
+    .filter(group => group.years.length);
+}
+
 function updateProjectYears(selectedId) {
   const city = $("projectCity")?.value;
-  const group = weatherGroups().find(g => g.city === city);
+  const group = completeWeatherGroups().find(g => g.city === city);
   const options = group?.years || [];
-  $("projectWeather").innerHTML = options.map(w => `<option value="${w.id}">${esc(w.year)}</option>`).join("");
+  $("projectWeather").innerHTML = options.length
+    ? options.map(w => `<option value="${w.id}">${esc(w.year)}</option>`).join("")
+    : `<option value="">暂无完整年份数据</option>`;
   if (selectedId) $("projectWeather").value = selectedId;
 }
 
 function showProjectModal(id) {
   const p = id ? state.projects.find(x => x.id === id) : null;
+  const groups = completeWeatherGroups();
   $("projectId").value = p?.id || "";
   $("projectName").value = p?.name || "";
-  $("projectCity").value = p?.weather_city || state.weather[0]?.city || "";
-  updateProjectYears(p?.weather_library_id || state.weather[0]?.id || "");
+  $("projectCity").value = groups.find(g => g.city === p?.weather_city)?.city || groups[0]?.city || "";
+  updateProjectYears(p?.weather_library_id || groups[0]?.years?.[0]?.id || "");
   $("projectRemark").value = p?.remark || "";
   $("projectModal").showModal();
 }
 
 async function saveProject() {
   const id = $("projectId").value;
+  if (!$("projectWeather").value) {
+    alert("请选择完整的气象年份数据");
+    return;
+  }
   const body = { name: $("projectName").value, weather_library_id: Number($("projectWeather").value), remark: $("projectRemark").value };
   await api(id ? `/api/projects/${id}` : "/api/projects", { method: id ? "PUT" : "POST", body: JSON.stringify(body) });
   $("projectModal").close();
@@ -846,14 +859,14 @@ async function renderWeather() {
   $("content").innerHTML = `
     <div class="filterbar">
       <div class="field"><label>气象城市筛选</label><input placeholder="城市 / 年份 / 备注" value="${esc(state.filters.weather)}" oninput="state.filters.weather=this.value; renderWeather()" /></div>
-      <button class="primary" onclick="showWeatherModal()">新建城市年份数据</button>
+      <button class="primary" onclick="showWeatherModal()">新建城市</button>
     </div>
-    <div class="grid">${groups.map(g => `<div class="card"><h3>${esc(g.city)}</h3><p>已管理年份：${g.years.map(w => esc(w.year)).join("、")}</p><p>数据行数：${g.years.reduce((sum,w)=>sum+Number(w.row_count||0),0)}</p><p>${esc(g.years.map(w=>w.remark).filter(Boolean).join("；"))}</p><div class="card-actions"><button onclick="showWeatherRowsByCity('${escAttr(g.city)}')">查看数据</button><button onclick="showWeatherModal('', '${escAttr(g.city)}')">新增年份</button><button onclick="showWeatherUploadByCity('${escAttr(g.city)}')">上传数据</button><button class="danger" onclick="deleteWeatherCity('${escAttr(g.city)}')">删除城市</button></div></div>`).join("") || `<div class="notice">暂无气象参数</div>`}</div>
+    <div class="grid">${groups.map(g => `<div class="card"><h3>${esc(g.city)}</h3><p>已管理年份：${g.years.map(w => `${esc(w.year)}${w.is_complete ? "" : "（空缺）"}`).join("、")}</p><p>数据行数：${g.years.reduce((sum,w)=>sum+Number(w.row_count||0),0)}</p><p>${esc(g.years.map(w=>w.remark).filter(Boolean).join("；")) || "&nbsp;"}</p><div class="card-actions"><button onclick="showWeatherRowsByCity('${escAttr(g.city)}')">查看数据</button><button class="danger" onclick="deleteWeatherCity('${escAttr(g.city)}')">删除城市</button></div></div>`).join("") || `<div class="notice">暂无气象参数</div>`}</div>
     ${modalHtml("weatherModal", "城市气象参数", `<input type="hidden" id="weatherId" /><div class="field"><label>城市名称 *</label><input id="weatherCity" /></div><div class="field"><label>年份 *</label><select id="weatherYear">${yearOptions()}</select></div><div class="field"><label>备注</label><textarea id="weatherRemark"></textarea></div>`, "saveWeather()")}
-    ${modalHtml("weatherUploadModal", "上传气象参数", `<input type="hidden" id="weatherUploadId" /><input type="hidden" id="weatherUploadCity" /><div class="field"><label>数据年份 *</label><select id="weatherUploadYear">${yearOptions()}</select></div><div class="field"><label>Excel 文件，需包含 times/month/day/hour/dry/rh/wb</label><input type="file" id="weatherFile" accept=".xls,.xlsx" /></div>`, "uploadWeather()")}
     <dialog id="weatherRowsModal" class="wide-dialog">
       <div class="modal-head"><strong id="weatherRowsTitle">气象参数预览</strong><div class="spacer"></div><button class="ghost" onclick="$('weatherRowsModal').close()">×</button></div>
       <div class="modal-body"><div id="weatherRowsBody"></div></div>
+      <input class="hidden-file" type="file" id="weatherRowsUploadInput" accept=".xls,.xlsx" onchange="uploadWeatherRowsFile()" />
     </dialog>`;
 }
 
@@ -925,17 +938,81 @@ async function showWeatherRows(id) {
 async function showWeatherRowsByCity(city, selectedId = "") {
   const group = weatherGroups().find(g => g.city === city);
   if (!group) return;
+  if (selectedId === "__new__") {
+    await addWeatherYearFromRowsModal(city);
+    return;
+  }
   const id = selectedId || group.years[0].id;
+  const selected = group.years.find(w => String(w.id) === String(id)) || group.years[0];
   const data = await api(`/api/weather/${id}/rows`);
   $("weatherRowsTitle").textContent = `${city} 气象参数预览`;
   $("weatherRowsBody").innerHTML = `
-    <div class="subhead">
-      <h3>${esc(city)} 气象参数预览，共 ${data.total} 行</h3>
-      <div class="inline-actions"><label class="select-label">年份</label><select onchange="showWeatherRowsByCity('${escAttr(city)}', this.value)">${group.years.map(w => `<option value="${w.id}" ${String(w.id)===String(id)?"selected":""}>${esc(w.year)}</option>`).join("")}</select></div>
+    <div class="weather-preview-head">
+      <div>
+        <h3>${esc(city)} 气象参数预览，共 ${data.total} 行</h3>
+        ${data.is_complete ? "" : `<div class="form-warning">数据有空缺，当前年份缺少 ${esc(data.missing_count)} 个逐时点，不支持在项目管理中选择</div>`}
+      </div>
+      <div class="inline-actions weather-year-tools">
+        <label class="select-label">年份</label>
+        <select onchange="showWeatherRowsByCity('${escAttr(city)}', this.value)">
+          ${group.years.map(w => `<option value="${w.id}" ${String(w.id)===String(id)?"selected":""}>${esc(w.year)}${w.is_complete ? "" : "（空缺）"}</option>`).join("")}
+          <option value="__new__">新增年份...</option>
+        </select>
+        <button onclick="chooseWeatherRowsUpload(${id})">${Number(selected?.row_count || 0) > 0 ? "覆盖上传" : "上传数据"}</button>
+      </div>
     </div>
     ${simpleTable(data.rows)}
   `;
   if (!$("weatherRowsModal").open) $("weatherRowsModal").showModal();
+}
+
+async function addWeatherYearFromRowsModal(city) {
+  const year = prompt("请输入新增年份", String(new Date().getFullYear()));
+  if (!year) {
+    showWeatherRowsByCity(city);
+    return;
+  }
+  const numericYear = Number(year);
+  if (!Number.isInteger(numericYear) || numericYear < 1900 || numericYear > 2100) {
+    alert("请输入有效年份");
+    showWeatherRowsByCity(city);
+    return;
+  }
+  try {
+    const target = await api("/api/weather", { method: "POST", body: JSON.stringify({ city, year: numericYear, remark: `${city} ${numericYear} 气象数据` }) });
+    await loadBase();
+    await showWeatherRowsByCity(city, target.id);
+  } catch (err) {
+    alert(err.message);
+    await loadBase();
+    await showWeatherRowsByCity(city);
+  }
+}
+
+function chooseWeatherRowsUpload(id) {
+  const input = $("weatherRowsUploadInput");
+  input.dataset.weatherId = String(id);
+  input.value = "";
+  input.click();
+}
+
+async function uploadWeatherRowsFile() {
+  const input = $("weatherRowsUploadInput");
+  const id = Number(input.dataset.weatherId);
+  const file = input.files[0];
+  if (!id || !file) return;
+  const target = state.weather.find(w => Number(w.id) === id);
+  if (target && Number(target.row_count || 0) > 0 && !confirm(`${target.city} ${target.year} 已有数据，上传后会覆盖原数据，是否继续？`)) {
+    input.value = "";
+    return;
+  }
+  const fd = new FormData();
+  fd.append("file", file);
+  await api(`/api/weather/${id}/upload`, { method: "POST", body: fd, headers: {} });
+  input.value = "";
+  await loadBase();
+  const updated = state.weather.find(w => Number(w.id) === id);
+  await showWeatherRowsByCity(updated?.city || target?.city || "", id);
 }
 async function deleteWeather(id) {
   if (!confirm("确认删除该城市气象参数？")) return;

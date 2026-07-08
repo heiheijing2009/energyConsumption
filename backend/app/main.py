@@ -261,6 +261,35 @@ def read_weather_workbook(path: Path, year: int) -> list[dict]:
     return rows
 
 
+def weather_completeness_sql() -> str:
+    return """
+        COUNT(r.id) AS row_count,
+        COUNT(DISTINCT r.times) AS distinct_time_count,
+        SUM(CASE WHEN r.dry IS NULL OR r.rh IS NULL OR r.wb IS NULL OR r.month IS NULL OR r.day IS NULL OR r.hour IS NULL THEN 1 ELSE 0 END) AS blank_count
+    """
+
+
+def weather_is_complete(row_count: int, distinct_time_count: int, blank_count: int | None) -> bool:
+    return int(row_count or 0) >= 8760 and int(distinct_time_count or 0) >= 8760 and int(blank_count or 0) == 0
+
+
+def require_complete_weather(db, weather_library_id: int) -> None:
+    row = db.execute(
+        f"""
+        SELECT {weather_completeness_sql()}
+        FROM weather_libraries w
+        LEFT JOIN weather_rows r ON r.library_id=w.id
+        WHERE w.id=?
+        GROUP BY w.id
+        """,
+        (weather_library_id,),
+    ).fetchone()
+    if not row:
+        raise HTTPException(status_code=400, detail="气象数据不存在")
+    if not weather_is_complete(row["row_count"], row["distinct_time_count"], row["blank_count"]):
+        raise HTTPException(status_code=400, detail="该年份气象数据有空缺，不能用于项目")
+
+
 @app.post("/api/auth/login")
 def login(payload: LoginPayload):
     with get_db() as db:
@@ -302,15 +331,21 @@ def create_user(payload: UserCreate, _: dict = Depends(require_admin)):
 def list_weather(_: dict = Depends(require_user)):
     with get_db() as db:
         rows = db.execute(
-            """
-            SELECT w.*, COUNT(r.id) AS row_count
+            f"""
+            SELECT w.*, {weather_completeness_sql()}
             FROM weather_libraries w
             LEFT JOIN weather_rows r ON r.library_id=w.id
             GROUP BY w.id
             ORDER BY w.city, w.year DESC
             """
         ).fetchall()
-    return rows_to_list(rows)
+    result = []
+    for row in rows:
+        item = row_to_dict(row)
+        item["is_complete"] = weather_is_complete(item["row_count"], item["distinct_time_count"], item["blank_count"])
+        item["missing_count"] = max(0, 8760 - int(item["distinct_time_count"] or 0))
+        result.append(item)
+    return result
 
 
 @app.get("/api/weather/cities")
@@ -380,6 +415,14 @@ def weather_rows(library_id: int, _: dict = Depends(require_user)):
             (library_id,),
         ).fetchall()
         total = db.execute("SELECT COUNT(*) AS c FROM weather_rows WHERE library_id=?", (library_id,)).fetchone()["c"]
+        stats = db.execute(
+            """
+            SELECT COUNT(DISTINCT times) AS distinct_time_count,
+                   SUM(CASE WHEN dry IS NULL OR rh IS NULL OR wb IS NULL OR month IS NULL OR day IS NULL OR hour IS NULL THEN 1 ELSE 0 END) AS blank_count
+            FROM weather_rows WHERE library_id=?
+            """,
+            (library_id,),
+        ).fetchone()
     result = []
     for row in rows:
         date = row["date_text"] or weather_datetime_text(library["year"], row["month"], row["day"], row["hour"])
@@ -392,7 +435,15 @@ def weather_rows(library_id: int, _: dict = Depends(require_user)):
                 "湿球温度（℃）": row["wb"],
             }
         )
-    return {"total": total, "rows": result}
+    distinct_time_count = int(stats["distinct_time_count"] or 0)
+    blank_count = int(stats["blank_count"] or 0)
+    return {
+        "total": total,
+        "rows": result,
+        "is_complete": weather_is_complete(total, distinct_time_count, blank_count),
+        "missing_count": max(0, 8760 - distinct_time_count),
+        "blank_count": blank_count,
+    }
 
 
 @app.post("/api/weather/{library_id}/upload")
@@ -452,6 +503,7 @@ def list_projects(_: dict = Depends(require_user)):
 def create_project(payload: ProjectPayload, _: dict = Depends(require_user)):
     t = now()
     with get_db() as db:
+        require_complete_weather(db, payload.weather_library_id)
         cur = db.execute(
             "INSERT INTO projects(name,weather_library_id,remark,created_at,updated_at) VALUES(?,?,?,?,?)",
             (payload.name, payload.weather_library_id, payload.remark or "", t, t),
@@ -483,6 +535,7 @@ def copy_project(project_id: int, _: dict = Depends(require_user)):
 @app.put("/api/projects/{project_id}")
 def update_project(project_id: int, payload: ProjectPayload, _: dict = Depends(require_user)):
     with get_db() as db:
+        require_complete_weather(db, payload.weather_library_id)
         db.execute(
             "UPDATE projects SET name=?, weather_library_id=?, remark=?, updated_at=? WHERE id=?",
             (payload.name, payload.weather_library_id, payload.remark or "", now(), project_id),

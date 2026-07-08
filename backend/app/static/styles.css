@@ -436,6 +436,20 @@ tbody tr:hover td { background: #fbfdff; }
 }
 .hidden-file { display: none; }
 .select-label { color: var(--muted); font-size: 12px; font-weight: 700; }
+.weather-preview-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  margin: 0 0 12px;
+}
+.weather-preview-head h3 { margin: 0; font-size: 15px; }
+.weather-year-tools {
+  flex-wrap: nowrap;
+}
+.weather-year-tools select {
+  width: 132px;
+}
 
 .status {
   padding: 3px 9px;
